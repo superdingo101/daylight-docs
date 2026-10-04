@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish one released product's docs into the combined Daylight Mintlify site."""
+"""Publish released product docs into the combined Daylight Mintlify site."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import re
 import shutil
 
 
-PRODUCT_EXCLUDES = {
+ROOT_ONLY_EXCLUDES = {
     "docs.json",
     "AGENTS.md",
     ".mintignore",
@@ -90,8 +90,8 @@ def namespace_destination(destination: str, product_key: str) -> str:
     return f"/{product_key}{destination}"
 
 
-def source_redirects(source_config: dict, product_key: str) -> list[dict]:
-    """Translate product-local redirects into combined-site compatibility redirects."""
+def translated_source_redirects(source_config: dict, product_key: str) -> list[dict]:
+    """Translate product-local redirects for both legacy and namespaced URLs."""
     generated: list[dict] = []
 
     for redirect in source_config.get("redirects", []):
@@ -103,9 +103,8 @@ def source_redirects(source_config: dict, product_key: str) -> list[dict]:
         if not isinstance(source, str) or not isinstance(destination, str):
             continue
 
-        # The product's old site-root behavior does not carry into the combined
-        # Daylight site. / is now the Daylight landing page and /<product> has
-        # its own generated index page.
+        # The old product site's root redirect must not replace the Daylight
+        # landing page or the generated /<product>/index page.
         if source == "/":
             continue
 
@@ -124,29 +123,14 @@ def source_redirects(source_config: dict, product_key: str) -> list[dict]:
     return generated
 
 
-def load_previous_generated_redirects(state_path: pathlib.Path) -> list[dict]:
-    if not state_path.is_file():
-        return []
-
-    value = json.loads(state_path.read_text())
-    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
-        raise ValueError(f"Invalid generated redirect state: {state_path}")
-    return value
-
-
-def update_site_config(
-    root_config_path: pathlib.Path,
-    source_config_path: pathlib.Path,
-    redirect_state_path: pathlib.Path,
+def build_product_fragment(
+    source_config: dict,
     product_key: str,
     product_label: str,
     product_icon: str,
     routes: set[str],
-) -> None:
-    root = json.loads(root_config_path.read_text())
-    source = json.loads(source_config_path.read_text())
-
-    groups = source.get("navigation", {}).get("groups")
+) -> dict:
+    groups = source_config.get("navigation", {}).get("groups")
     if not isinstance(groups, list):
         raise ValueError("Product docs.json must contain navigation.groups")
 
@@ -159,58 +143,85 @@ def update_site_config(
         *prefix_navigation(groups, product_key),
     ]
 
-    navigation = root.setdefault("navigation", {})
-    tabs = navigation.setdefault("tabs", [])
-    tab = next((item for item in tabs if item.get("tab") == product_label), None)
-    if tab is None:
-        tabs.append(
-            {
-                "tab": product_label,
-                "icon": product_icon,
-                "groups": generated_groups,
-            }
-        )
-    else:
-        tab["icon"] = product_icon
-        tab["groups"] = generated_groups
-        tab.pop("pages", None)
+    redirects_by_source: dict[str, dict] = {}
 
-    previous_generated = load_previous_generated_redirects(redirect_state_path)
-    authored_redirects = [
-        item for item in root.get("redirects", []) if item not in previous_generated
-    ]
-    authored_sources = {
-        item.get("source")
-        for item in authored_redirects
-        if isinstance(item, dict) and isinstance(item.get("source"), str)
-    }
+    for redirect in translated_source_redirects(source_config, product_key):
+        redirects_by_source[redirect["source"]] = redirect
 
-    generated_by_source: dict[str, dict] = {}
-
-    for redirect in source_redirects(source, product_key):
-        generated_by_source[redirect["source"]] = redirect
-
-    # Current routes take precedence over historical source redirects.
+    # Current routes take precedence over historical product redirects.
     for route in sorted(routes):
         if route == "index":
             continue
-        generated_by_source[f"/{route}"] = {
+        redirects_by_source[f"/{route}"] = {
             "source": f"/{route}",
             "destination": f"/{product_key}/{route}",
             "permanent": True,
         }
 
-    generated_redirects = [
-        redirect
-        for source_path, redirect in generated_by_source.items()
-        if source_path not in authored_sources
-    ]
+    return {
+        "product_key": product_key,
+        "tab": {
+            "tab": product_label,
+            "icon": product_icon,
+            "groups": generated_groups,
+        },
+        "redirects": list(redirects_by_source.values()),
+    }
 
-    root["redirects"] = [*authored_redirects, *generated_redirects]
-    root_config_path.write_text(json.dumps(root, indent=2) + "\n")
 
-    redirect_state_path.parent.mkdir(exist_ok=True)
-    redirect_state_path.write_text(json.dumps(generated_redirects, indent=2) + "\n")
+def compose_site_config(
+    template_path: pathlib.Path,
+    output_path: pathlib.Path,
+    fragments_dir: pathlib.Path,
+) -> None:
+    root = json.loads(template_path.read_text())
+    navigation = root.setdefault("navigation", {})
+    tabs = navigation.setdefault("tabs", [])
+    redirects = root.setdefault("redirects", [])
+
+    authored_tab_names = {
+        item.get("tab")
+        for item in tabs
+        if isinstance(item, dict) and isinstance(item.get("tab"), str)
+    }
+    authored_redirect_sources = {
+        item.get("source")
+        for item in redirects
+        if isinstance(item, dict) and isinstance(item.get("source"), str)
+    }
+
+    for fragment_path in sorted(fragments_dir.glob("*-config.json")):
+        fragment = json.loads(fragment_path.read_text())
+
+        tab = fragment.get("tab")
+        if not isinstance(tab, dict) or not isinstance(tab.get("tab"), str):
+            raise ValueError(f"Invalid product tab fragment: {fragment_path}")
+        if tab["tab"] not in authored_tab_names:
+            tabs.append(tab)
+
+        for redirect in fragment.get("redirects", []):
+            if not isinstance(redirect, dict):
+                raise ValueError(f"Invalid redirect in product fragment: {fragment_path}")
+            source = redirect.get("source")
+            if not isinstance(source, str):
+                raise ValueError(f"Redirect without source in product fragment: {fragment_path}")
+            if source in authored_redirect_sources:
+                continue
+            redirects.append(redirect)
+            authored_redirect_sources.add(source)
+
+    output_path.write_text(json.dumps(root, indent=2) + "\n")
+
+
+def root_only_ignore(source_docs: pathlib.Path):
+    source_root = source_docs.resolve()
+
+    def ignore(directory: str, _names: list[str]) -> set[str]:
+        if pathlib.Path(directory).resolve() == source_root:
+            return ROOT_ONLY_EXCLUDES
+        return set()
+
+    return ignore
 
 
 def copy_product_docs(source_docs: pathlib.Path, product_root: pathlib.Path) -> None:
@@ -220,7 +231,7 @@ def copy_product_docs(source_docs: pathlib.Path, product_root: pathlib.Path) -> 
     shutil.copytree(
         source_docs,
         product_root,
-        ignore=shutil.ignore_patterns(*PRODUCT_EXCLUDES),
+        ignore=root_only_ignore(source_docs),
     )
 
 
@@ -250,13 +261,13 @@ def publish(
     publish_shared_assets: bool,
     repo_root: pathlib.Path = pathlib.Path("."),
 ) -> None:
-    source_config = source_docs / "docs.json"
-    if not source_config.is_file():
+    source_config_path = source_docs / "docs.json"
+    if not source_config_path.is_file():
         raise ValueError("Source docs directory is missing docs.json")
 
-    root_config = repo_root / "docs.json"
-    if not root_config.is_file():
-        raise ValueError("Publishing repository is missing docs.json")
+    template_path = repo_root / "docs.template.json"
+    if not template_path.is_file():
+        raise ValueError("Publishing repository is missing docs.template.json")
 
     product_root = repo_root / product_key
     copy_product_docs(source_docs, product_root)
@@ -267,18 +278,24 @@ def publish(
 
     rewrite_product_links(product_root, product_key, routes)
 
-    sync_dir = repo_root / ".sync"
-    sync_dir.mkdir(exist_ok=True)
-    redirect_state = sync_dir / f"{product_key}-generated-redirects.json"
-
-    update_site_config(
-        root_config,
+    source_config = json.loads(source_config_path.read_text())
+    fragment = build_product_fragment(
         source_config,
-        redirect_state,
         product_key,
         product_label,
         product_icon,
         routes,
+    )
+
+    sync_dir = repo_root / ".sync"
+    sync_dir.mkdir(exist_ok=True)
+    fragment_path = sync_dir / f"{product_key}-config.json"
+    fragment_path.write_text(json.dumps(fragment, indent=2) + "\n")
+
+    compose_site_config(
+        template_path,
+        repo_root / "docs.json",
+        sync_dir,
     )
 
     if publish_shared_assets:
