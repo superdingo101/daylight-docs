@@ -99,7 +99,7 @@ def discover_routes(product_root: pathlib.Path) -> set[str]:
 
 
 def namespace_destination(destination: str, product_key: str) -> str:
-    if not destination.startswith("/"):
+    if not destination.startswith("/") or destination.startswith("//"):
         return destination
     if destination == "/":
         return f"/{product_key}"
@@ -122,6 +122,8 @@ def translated_source_redirects(
         destination = redirect.get("destination")
         if not isinstance(source, str) or not isinstance(destination, str):
             continue
+        if not source.startswith("/") or source.startswith("//"):
+            raise ValueError(f"Invalid product redirect source: {source!r}")
 
         # The old product site's root redirect must not replace the Daylight
         # landing page or the generated /<product>/index page.
@@ -226,10 +228,11 @@ def compose_site_config(
         fragment = json.loads(fragment_path.read_text())
         fragment_product_key = fragment.get("product_key")
 
-        if (
-            not isinstance(fragment_product_key, str)
-            or fragment_path.name != f"{fragment_product_key}-config.json"
-        ):
+        if not isinstance(fragment_product_key, str):
+            raise ValueError(f"Invalid product fragment identity: {fragment_path}")
+        validate_product_key(fragment_product_key)
+
+        if fragment_path.name != f"{fragment_product_key}-config.json":
             raise ValueError(f"Invalid product fragment identity: {fragment_path}")
 
         tab = fragment.get("tab")
