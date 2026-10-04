@@ -23,23 +23,6 @@ ROOT_ONLY_EXCLUDES = {
 
 NAVIGATION_PATH_FIELDS = {"pages", "root", "href"}
 
-ATTRIBUTE_LINK = re.compile(
-    r'(?P<prefix>\b(?:href|src)=(?P<quote>["\']))(?P<target>/[^"\']*)(?P=quote)'
-)
-MARKDOWN_ANGLE_LINK = re.compile(
-    r'(?P<prefix>\]\(\s*<)(?P<target>/[^>\n]+)(?P<suffix>>(?:\s+(?:"[^"]*"|\'[^\']*\'|\([^)]*\)))?\s*\))'
-)
-MARKDOWN_LINK = re.compile(
-    r'(?P<prefix>\]\(\s*)(?P<target>/[^\s)\n]+)(?P<suffix>(?:\s+(?:"[^"]*"|\'[^\']*\'|\([^)]*\)))?\s*\))'
-)
-REFERENCE_ANGLE_LINK = re.compile(
-    r'(?m)(?P<prefix>^[ \t]{0,3}\[[^\]\n]+\]:[ \t]*<)(?P<target>/[^>\n]+)(?P<suffix>>)'
-)
-REFERENCE_LINK = re.compile(
-    r'(?m)(?P<prefix>^[ \t]{0,3}\[[^\]\n]+\]:[ \t]*)(?P<target>/[^\s\n]+)'
-)
-FENCE_START = re.compile(r'^[ \t]{0,3}(?P<fence>`{3,}|~{3,})')
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -113,168 +96,6 @@ def discover_routes(product_root: pathlib.Path) -> set[str]:
         str(path.relative_to(product_root).with_suffix("")).replace("\\", "/")
         for path in product_root.rglob("*.mdx")
     }
-
-
-def product_local_path_exists(product_root: pathlib.Path, relative: str) -> bool:
-    root = product_root.resolve()
-    candidate = (root / relative).resolve()
-
-    try:
-        candidate.relative_to(root)
-    except ValueError:
-        return False
-
-    return candidate.exists()
-
-
-def namespace_local_target(
-    target: str,
-    product_root: pathlib.Path,
-    product_key: str,
-    routes: set[str],
-) -> str:
-    if not target.startswith("/") or target.startswith("//") or target == "/":
-        return target
-
-    match = re.match(r"(?P<path>[^?#]*)(?P<suffix>[?#].*)?$", target)
-    if not match:
-        return target
-
-    path_part = match.group("path")
-    suffix = match.group("suffix") or ""
-    relative = path_part.lstrip("/")
-    route = relative.rstrip("/")
-
-    if route in routes or product_local_path_exists(product_root, relative):
-        return f"/{product_key}/{relative}{suffix}"
-
-    return target
-
-
-def rewrite_visible_segment(
-    text: str,
-    product_root: pathlib.Path,
-    product_key: str,
-    routes: set[str],
-) -> str:
-    def rewrite_with_suffix(match: re.Match[str]) -> str:
-        target = namespace_local_target(
-            match.group("target"),
-            product_root,
-            product_key,
-            routes,
-        )
-        return f"{match.group('prefix')}{target}{match.groupdict().get('suffix', '')}"
-
-    def rewrite_attribute(match: re.Match[str]) -> str:
-        target = namespace_local_target(
-            match.group("target"),
-            product_root,
-            product_key,
-            routes,
-        )
-        return f"{match.group('prefix')}{target}{match.group('quote')}"
-
-    text = ATTRIBUTE_LINK.sub(rewrite_attribute, text)
-    text = MARKDOWN_ANGLE_LINK.sub(rewrite_with_suffix, text)
-    text = MARKDOWN_LINK.sub(rewrite_with_suffix, text)
-    text = REFERENCE_ANGLE_LINK.sub(rewrite_with_suffix, text)
-    text = REFERENCE_LINK.sub(rewrite_with_suffix, text)
-    return text
-
-
-def rewrite_outside_inline_code(
-    line: str,
-    product_root: pathlib.Path,
-    product_key: str,
-    routes: set[str],
-) -> str:
-    output: list[str] = []
-    position = 0
-
-    while True:
-        opener = re.search(r"`+", line[position:])
-        if not opener:
-            output.append(
-                rewrite_visible_segment(
-                    line[position:],
-                    product_root,
-                    product_key,
-                    routes,
-                )
-            )
-            break
-
-        start = position + opener.start()
-        run = opener.group()
-        output.append(
-            rewrite_visible_segment(
-                line[position:start],
-                product_root,
-                product_key,
-                routes,
-            )
-        )
-
-        closer = re.search(
-            rf"(?<!`){re.escape(run)}(?!`)",
-            line[start + len(run):],
-        )
-        if not closer:
-            output.append(
-                rewrite_visible_segment(
-                    line[start:],
-                    product_root,
-                    product_key,
-                    routes,
-                )
-            )
-            break
-
-        end = start + len(run) + closer.end()
-        output.append(line[start:end])
-        position = end
-
-    return "".join(output)
-
-
-def rewrite_product_links(product_root: pathlib.Path, product_key: str, routes: set[str]) -> None:
-    for mdx_path in product_root.rglob("*.mdx"):
-        output: list[str] = []
-        fence_char: str | None = None
-        fence_length = 0
-
-        for line in mdx_path.read_text().splitlines(keepends=True):
-            stripped = line.rstrip("\r\n")
-
-            if fence_char is not None:
-                output.append(line)
-                if re.fullmatch(
-                    rf"[ \t]{{0,3}}{re.escape(fence_char)}{{{fence_length},}}[ \t]*",
-                    stripped,
-                ):
-                    fence_char = None
-                    fence_length = 0
-                continue
-
-            fence = FENCE_START.match(stripped)
-            if fence:
-                delimiter = fence.group("fence")
-                fence_char = delimiter[0]
-                fence_length = len(delimiter)
-                output.append(line)
-                continue
-
-            output.append(
-                rewrite_outside_inline_code(
-                    line,
-                    product_root,
-                    product_key,
-                    routes,
-                )
-            )
-
-        mdx_path.write_text("".join(output))
 
 
 def namespace_destination(destination: str, product_key: str) -> str:
@@ -532,8 +353,6 @@ def publish(
     routes = discover_routes(product_root)
     if "index" not in routes:
         raise ValueError("Product docs must contain index.mdx")
-
-    rewrite_product_links(product_root, product_key, routes)
 
     source_config = json.loads(source_config_path.read_text())
     fragment = build_product_fragment(
