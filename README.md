@@ -44,7 +44,11 @@ Generated files should not be edited directly:
 
 Each product owns its generated config fragment. Composing from the template plus fragments avoids inferring ownership from previous `docs.json` output, preserves hand-authored Daylight redirects even when they match generated values, and allows future products to coexist without one product sync erasing another. Legacy root URLs are an explicit per-product capability: Calendar Card preserves the existing `/introduction`, `/configuration/...`, and similar URLs, while future products publish only inside their own namespace unless they actually have legacy root URLs to preserve.
 
-Only site-level publishing metadata at the root of a product's `docs/` directory is excluded from that product's namespaced copy. Product-owned `images/`, `logo/`, and other local files remain inside the product namespace, and root-relative MDX links to copied pages/files are rewritten accordingly. The designated shared-assets product may additionally publish global assets used by the Daylight shell. Same-named nested directories such as `guides/images/` remain intact.
+Only site-level publishing metadata at the root of a product's `docs/` directory is excluded from that product's namespaced copy. Product-owned `images/`, `logo/`, and other local files remain inside the product namespace. Product MDX is copied **unchanged**; the publisher does not parse or rewrite MDX.
+
+Calendar Card is the legacy exception: its existing root page URLs are preserved with redirects and its released assets are also copied to the global Daylight shell, so the current released Card docs continue to work unchanged.
+
+New products should author product-local absolute links under their final namespace (for example, `/import/images/example.png` and `/import/introduction`) or use relative links. This keeps product docs deterministic and avoids maintaining a custom MDX parser in the publishing layer. The designated shared-assets product may additionally publish global assets used by the Daylight shell. Same-named nested directories such as `guides/images/` remain intact.
 
 ## Validation
 
