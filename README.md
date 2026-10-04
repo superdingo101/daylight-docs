@@ -17,7 +17,7 @@ For Daylight Calendar Card:
 
 1. Code, tests, and docs are changed together in the Card repository.
 2. A GitHub release is published from the Card repository.
-3. The sync workflow fetches the latest released tag and deterministically rebuilds the Card section.
+3. The sync workflow resolves that release by its explicit Git tag ref and deterministically rebuilds the Card section.
 4. Git commits only when the generated site differs from what is already published.
 5. Mintlify deploys the resulting commit.
 
@@ -31,8 +31,11 @@ The following are generated and should not be edited manually:
 
 - `card/`
 - `.sync/card-release`
-- Card-derived navigation and redirects in `docs.json`
+- `.sync/card-generated-redirects.json`
+- Card-derived navigation and compatibility redirects in `docs.json`
 - `images/`, `favicon.ico`, and `style.css` while the Card remains the source of the shared Daylight visual assets
+
+The publisher records the exact redirects it generated so future rebuilds can replace only those entries. Hand-authored Daylight redirects remain untouched.
 
 The site-wide landing page and global Mintlify configuration remain intentionally authored here.
 
