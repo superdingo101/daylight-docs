@@ -268,23 +268,16 @@ class PublishProductDocsTests(unittest.TestCase):
             fragment_redirects,
         )
 
-    def test_product_pages_keep_namespaced_assets_and_rewrite_local_links(self):
+    def test_product_content_is_copied_unchanged_with_assets_preserved(self):
+        source_index = (self.source / "index.mdx").read_text()
+        source_intro = (self.source / "introduction.mdx").read_text()
+
         self.publish_card()
 
         index = (self.root / "card" / "index.mdx").read_text()
         intro = (self.root / "card" / "introduction.mdx").read_text()
-        self.assertIn('href="/card/introduction"', index)
-        self.assertIn('src="/card/images/logo.png"', index)
-        self.assertIn('](/card/guides/setup?mode=fast "Setup guide")', index)
-        self.assertIn("](/card/logo/light.svg)", index)
-        self.assertIn('[logo-ref]: /card/images/logo.png "Logo"', index)
-        self.assertIn("[Escape](/../docs.template.json)", index)
-        self.assertIn('`<img src="/images/logo.png" />`', index)
-        self.assertIn(
-            '```html\n<img src="/images/logo.png" />\n```',
-            index,
-        )
-        self.assertIn("](/card/guides/setup#next)", intro)
+        self.assertEqual(source_index, index)
+        self.assertEqual(source_intro, intro)
 
         self.assertTrue((self.root / "card" / "images" / "logo.png").exists())
         self.assertTrue((self.root / "card" / "logo" / "light.svg").exists())
@@ -299,11 +292,16 @@ class PublishProductDocsTests(unittest.TestCase):
             (self.root / ".sync" / "card-release").read_text(),
         )
 
-    def test_non_shared_product_keeps_assets_without_replacing_global_assets(self):
+    def test_non_shared_product_keeps_namespaced_assets_without_replacing_global_assets(self):
         self.publish_card()
         global_image = (self.root / "images" / "logo.png").read_bytes()
 
         (self.source / "images" / "logo.png").write_bytes(b"import image")
+        (self.source / "index.mdx").write_text(
+            '<img src="/import/images/logo.png" />\n'
+            '![Logo](/import/logo/light.svg)\n'
+            '[Intro](/import/introduction)\n'
+        )
         self.publish_import()
 
         self.assertEqual(
@@ -319,6 +317,7 @@ class PublishProductDocsTests(unittest.TestCase):
         index = (self.root / "import" / "index.mdx").read_text()
         self.assertIn('src="/import/images/logo.png"', index)
         self.assertIn("](/import/logo/light.svg)", index)
+        self.assertIn("](/import/introduction)", index)
 
     def test_only_legacy_product_claims_root_compatibility_urls(self):
         self.publish_card()
