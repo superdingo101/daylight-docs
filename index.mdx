@@ -1,0 +1,34 @@
+---
+title: Daylight
+description: Choose the Daylight calendar experience that fits your Home Assistant setup.
+mode: frame
+---
+
+<div className="flex w-full flex-col gap-8 max-w-5xl mx-auto px-4 md:px-8 lg:px-12 py-10 lg:gap-12 lg:py-16">
+  <div className="flex max-w-[720px] flex-col gap-3 self-center text-center">
+    <h1 className="text-[34px] font-medium leading-tight tracking-tight text-gray-900 dark:text-gray-50">
+      A better calendar experience for Home Assistant
+    </h1>
+    <p className="text-balance text-base leading-relaxed tracking-tight text-gray-600 dark:text-gray-400">
+      Display your calendars beautifully, turn everyday documents into events with your own AI, or use a managed Daylight service when you want less setup.
+    </p>
+  </div>
+
+  <CardGroup cols={3}>
+    <Card title="Calendar Card" icon="calendar-days" href="/card/introduction">
+      A polished, customizable calendar card for Home Assistant dashboards.
+    </Card>
+
+    <Card title="Calendar Import — BYO AI" icon="sparkles" href="https://github.com/superdingo101/daylight-calendar-import">
+      Turn emails, flyers, screenshots, and PDFs into calendar events while using your own AI provider. Documentation is coming to this site next.
+    </Card>
+
+    <Card title="Daylight Hosted" icon="cloud">
+      A managed import experience for people who do not want to configure their own AI or email infrastructure. Planned for later.
+    </Card>
+  </CardGroup>
+
+  <Note>
+    The open-source Calendar Card and Calendar Import projects remain independently usable. The hosted option is a separate managed service planned for the future.
+  </Note>
+</div>
