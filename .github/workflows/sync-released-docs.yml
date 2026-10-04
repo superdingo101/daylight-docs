@@ -1,0 +1,217 @@
+name: Sync Released Product Docs
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/sync-released-docs.yml"
+      - "docs.json"
+      - "index.mdx"
+  workflow_dispatch:
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-released-product-docs
+  cancel-in-progress: false
+
+jobs:
+  sync-calendar-card:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout publishing repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Find latest Calendar Card release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          TAG="$(gh api repos/superdingo101/daylight-calendar-card/releases/latest --jq '.tag_name')"
+          CURRENT="$(cat .sync/card-release 2>/dev/null || true)"
+
+          echo "Latest release: $TAG"
+          echo "Currently published: ${CURRENT:-none}"
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if [ "$TAG" = "$CURRENT" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fetch released Calendar Card documentation
+        if: steps.release.outputs.changed == 'true'
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          TMP_DIR="$(mktemp -d)"
+          trap 'rm -rf "$TMP_DIR"' EXIT
+
+          git clone             --depth 1             --branch "$RELEASE_TAG"             https://github.com/superdingo101/daylight-calendar-card.git             "$TMP_DIR/card-source"
+
+          test -f "$TMP_DIR/card-source/docs/docs.json"
+
+          rm -rf card
+          mkdir -p card .sources .sync
+
+          rsync -a             --exclude='docs.json'             --exclude='AGENTS.md'             --exclude='.mintignore'             --exclude='.atlas-analysis.json'             --exclude='style.css'             "$TMP_DIR/card-source/docs/"             card/
+
+          cp "$TMP_DIR/card-source/docs/docs.json" .sources/card.docs.json
+
+          # The Card currently owns the shared Daylight docs visual assets.
+          # These remain generated here and can be split into shared assets later.
+          rm -rf images
+          cp -R "$TMP_DIR/card-source/docs/images" images
+          cp "$TMP_DIR/card-source/docs/favicon.ico" favicon.ico
+          cp "$TMP_DIR/card-source/docs/style.css" style.css
+
+          printf '%s\n' "$RELEASE_TAG" > .sync/card-release
+
+      - name: Build combined navigation and preserve legacy URLs
+        if: steps.release.outputs.changed == 'true'
+        run: |
+          python3 <<'PY'
+          import json
+          import pathlib
+          import re
+
+          product_key = "card"
+          product_label = "Calendar Card"
+
+          root_path = pathlib.Path("docs.json")
+          source_path = pathlib.Path(".sources/card.docs.json")
+
+          root = json.loads(root_path.read_text())
+          source = json.loads(source_path.read_text())
+
+          groups = source.get("navigation", {}).get("groups")
+          if not isinstance(groups, list):
+              raise SystemExit("Card docs.json does not contain navigation.groups")
+
+          def prefix_node(value):
+              if isinstance(value, list):
+                  return [prefix_node(item) for item in value]
+              if not isinstance(value, dict):
+                  return value
+
+              out = {}
+              for key, child in value.items():
+                  if key == "pages" and isinstance(child, list):
+                      out[key] = [
+                          f"{product_key}/{item.lstrip('/')}"
+                          if isinstance(item, str)
+                          else prefix_node(item)
+                          for item in child
+                      ]
+                  else:
+                      out[key] = prefix_node(child)
+              return out
+
+          def collect_pages(value, result):
+              if isinstance(value, list):
+                  for item in value:
+                      collect_pages(item, result)
+                  return
+              if not isinstance(value, dict):
+                  return
+              for key, child in value.items():
+                  if key == "pages" and isinstance(child, list):
+                      for item in child:
+                          if isinstance(item, str):
+                              result.add(item.lstrip("/"))
+                          else:
+                              collect_pages(item, result)
+                  else:
+                      collect_pages(child, result)
+
+          source_pages = set()
+          collect_pages(groups, source_pages)
+
+          generated_groups = [
+              {
+                  "group": "Overview",
+                  "icon": "house",
+                  "pages": [f"{product_key}/index"],
+              },
+              *prefix_node(groups),
+          ]
+
+          navigation = root.setdefault("navigation", {})
+          tabs = navigation.setdefault("tabs", [])
+          tab = next((item for item in tabs if item.get("tab") == product_label), None)
+          if tab is None:
+              tabs.append({"tab": product_label, "icon": "calendar-days", "groups": generated_groups})
+          else:
+              tab["groups"] = generated_groups
+              tab.pop("pages", None)
+
+          redirects = [
+              item
+              for item in root.get("redirects", [])
+              if not str(item.get("destination", "")).startswith(f"/{product_key}/")
+          ]
+          redirects.extend(
+              {
+                  "source": f"/{page}",
+                  "destination": f"/{product_key}/{page}",
+                  "permanent": True,
+              }
+              for page in sorted(source_pages)
+          )
+          root["redirects"] = redirects
+
+          root_path.write_text(json.dumps(root, indent=2) + "\n")
+
+          # Product docs were authored as the root site. Rewrite only links that
+          # point to known Card pages; shared assets such as /images stay global.
+          targets = sorted(source_pages, key=len, reverse=True)
+          for mdx_path in pathlib.Path(product_key).rglob("*.mdx"):
+              text = mdx_path.read_text()
+
+              for target in targets:
+                  escaped = re.escape(target)
+                  text = re.sub(
+                      rf'href=(["\'])/{escaped}(?=(?:[#?][^"\']*)?["\'])',
+                      rf'href=\1/{product_key}/{target}',
+                      text,
+                  )
+                  text = re.sub(
+                      rf'\]\(/{escaped}(?=(?:[#?][^)]*)?\))',
+                      rf'](/{product_key}/{target}',
+                      text,
+                  )
+
+              mdx_path.write_text(text)
+          PY
+
+      - name: Commit published documentation
+        if: steps.release.outputs.changed == 'true'
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add             .sync/card-release             .sources/card.docs.json             card             docs.json             images             favicon.ico             style.css
+
+          if git diff --cached --quiet; then
+            echo "No generated documentation changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Publish Calendar Card docs for $RELEASE_TAG"
+          git push
