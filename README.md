@@ -42,9 +42,9 @@ Generated files should not be edited directly:
 - `.sync/card-config.json`
 - `images/`, `favicon.ico`, and `style.css` while the Card remains the source of the shared Daylight visual assets
 
-Each product owns its generated config fragment. Composing from the template plus fragments avoids inferring ownership from previous `docs.json` output, preserves hand-authored Daylight redirects even when they match generated values, and allows future products to coexist without one product sync erasing another.
+Each product owns its generated config fragment. Composing from the template plus fragments avoids inferring ownership from previous `docs.json` output, preserves hand-authored Daylight redirects even when they match generated values, and allows future products to coexist without one product sync erasing another. Legacy root URLs are an explicit per-product capability: Calendar Card preserves the existing `/introduction`, `/configuration/...`, and similar URLs, while future products publish only inside their own namespace unless they actually have legacy root URLs to preserve.
 
-Only publishing metadata/assets at the root of a product's `docs/` directory are excluded from that product's namespaced copy. Same-named nested directories such as `guides/images/` remain intact.
+Only site-level publishing metadata at the root of a product's `docs/` directory is excluded from that product's namespaced copy. Product-owned `images/`, `logo/`, and other local files remain inside the product namespace, and root-relative MDX links to copied pages/files are rewritten accordingly. The designated shared-assets product may additionally publish global assets used by the Daylight shell. Same-named nested directories such as `guides/images/` remain intact.
 
 ## Validation
 
