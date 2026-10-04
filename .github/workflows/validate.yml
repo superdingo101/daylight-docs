@@ -14,7 +14,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Validate site configuration JSON
+      - name: Validate authored site configuration JSON
+        run: python3 -m json.tool docs.template.json >/dev/null
+      - name: Validate generated site configuration JSON
         run: python3 -m json.tool docs.json >/dev/null
       - name: Run publisher unit tests
         run: python3 -m unittest discover -s tests -v
