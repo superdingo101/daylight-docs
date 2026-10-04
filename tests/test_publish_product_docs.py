@@ -68,6 +68,7 @@ class PublishProductDocsTests(unittest.TestCase):
                 "groups": [
                     {
                         "group": "Get Started",
+                        "root": "introduction",
                         "pages": ["introduction", "guides/setup"],
                     }
                 ]
@@ -84,6 +85,11 @@ class PublishProductDocsTests(unittest.TestCase):
                     "permanent": True,
                 },
                 {
+                    "source": "/introduction",
+                    "destination": "/old-guide",
+                    "permanent": True,
+                },
+                {
                     "source": "/external",
                     "destination": "https://example.com/reference",
                     "permanent": False,
@@ -94,8 +100,15 @@ class PublishProductDocsTests(unittest.TestCase):
         (self.source / "index.mdx").write_text(
             '<Card href="/introduction">Start</Card>\n'
             '<img src="/images/logo.png" />\n'
-            '[Setup](/guides/setup?mode=fast)\n'
+            '[Setup](/guides/setup?mode=fast "Setup guide")\n'
             '![Logo](/logo/light.svg)\n'
+            '[logo-ref]: /images/logo.png "Logo"\n'
+            '[Reference][logo-ref]\n'
+            '[Escape](/../docs.template.json)\n'
+            '`<img src="/images/logo.png" />`\n'
+            '```html\n'
+            '<img src="/images/logo.png" />\n'
+            '```\n'
         )
         (self.source / "introduction.mdx").write_text(
             '[Setup](/guides/setup#next)\n'
@@ -163,6 +176,7 @@ class PublishProductDocsTests(unittest.TestCase):
             ["card/introduction", "card/guides/setup"],
             card_tab["groups"][1]["pages"],
         )
+        self.assertEqual("card/introduction", card_tab["groups"][1]["root"])
 
         self.assertFalse(any(tab["tab"] == "Stale" for tab in config["navigation"]["tabs"]))
         self.assertFalse(any(r["source"] == "/stale" for r in config["redirects"]))
@@ -233,6 +247,27 @@ class PublishProductDocsTests(unittest.TestCase):
         self.assertFalse(any(r["source"] == "/" for r in redirects))
         self.assertFalse(any(r["source"] == "/card" for r in redirects))
 
+        card_fragment = json.loads(
+            (self.root / ".sync" / "card-config.json").read_text()
+        )
+        fragment_redirects = card_fragment["redirects"]
+        self.assertNotIn(
+            {
+                "source": "/card/introduction",
+                "destination": "/card/old-guide",
+                "permanent": True,
+            },
+            fragment_redirects,
+        )
+        self.assertIn(
+            {
+                "source": "/introduction",
+                "destination": "/card/introduction",
+                "permanent": True,
+            },
+            fragment_redirects,
+        )
+
     def test_product_pages_keep_namespaced_assets_and_rewrite_local_links(self):
         self.publish_card()
 
@@ -240,8 +275,15 @@ class PublishProductDocsTests(unittest.TestCase):
         intro = (self.root / "card" / "introduction.mdx").read_text()
         self.assertIn('href="/card/introduction"', index)
         self.assertIn('src="/card/images/logo.png"', index)
-        self.assertIn("](/card/guides/setup?mode=fast)", index)
+        self.assertIn('](/card/guides/setup?mode=fast "Setup guide")', index)
         self.assertIn("](/card/logo/light.svg)", index)
+        self.assertIn('[logo-ref]: /card/images/logo.png "Logo"', index)
+        self.assertIn("[Escape](/../docs.template.json)", index)
+        self.assertIn('`<img src="/images/logo.png" />`', index)
+        self.assertIn(
+            '```html\n<img src="/images/logo.png" />\n```',
+            index,
+        )
         self.assertIn("](/card/guides/setup#next)", intro)
 
         self.assertTrue((self.root / "card" / "images" / "logo.png").exists())
@@ -336,6 +378,44 @@ class PublishProductDocsTests(unittest.TestCase):
             },
             config["redirects"],
         )
+
+
+    def test_rejects_symlinks_in_released_docs(self):
+        target = self.root / "outside-secret"
+        target.write_text("secret")
+        (self.source / "leak.txt").symlink_to(target)
+
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            self.publish_card()
+
+    def test_rejects_unsafe_product_keys(self):
+        with self.assertRaisesRegex(ValueError, "Invalid product key"):
+            publish(
+                source_docs=self.source,
+                product_key="../escape",
+                product_label="Escape",
+                product_icon="triangle-alert",
+                release_tag="v1",
+                publish_shared_assets=False,
+                preserve_legacy_root_urls=False,
+                repo_root=self.root,
+            )
+
+    def test_generated_product_conflicts_fail_instead_of_silently_winning(self):
+        sync_dir = self.root / ".sync"
+        sync_dir.mkdir()
+        (sync_dir / "other-config.json").write_text(json.dumps({
+            "product_key": "other",
+            "tab": {
+                "tab": "Calendar Card",
+                "icon": "calendar",
+                "groups": [{"group": "Other", "pages": ["other/index"]}],
+            },
+            "redirects": [],
+        }))
+
+        with self.assertRaisesRegex(ValueError, "conflicts"):
+            self.publish_card()
 
     def test_publish_is_deterministic_when_repeated_for_same_release(self):
         self.publish_card()
