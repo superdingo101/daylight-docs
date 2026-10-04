@@ -18,27 +18,34 @@ For Daylight Calendar Card:
 1. Code, tests, and docs are changed together in the Card repository.
 2. A GitHub release is published from the Card repository.
 3. The sync workflow resolves that release by its explicit Git tag ref and deterministically rebuilds the Card section.
-4. Git commits only when the generated site differs from what is already published.
-5. Mintlify deploys the resulting commit.
+4. The publisher writes a product config fragment, then composes `docs.json` from the authored Daylight template plus all available product fragments.
+5. Git commits only when the generated site differs from what is already published.
+6. Mintlify deploys the resulting commit.
 
-Scheduled syncs detect new releases without cross-repository credentials. Manual syncs and publisher/workflow changes rebuild the current release immediately, so fixes to publishing logic do not have to wait for another Card release.
+Scheduled syncs detect new releases without cross-repository credentials. Manual syncs and publisher/workflow/template changes rebuild the current release immediately, so publishing fixes do not have to wait for another Card release.
 
 This means unreleased documentation can live on the Card repository's normal development branch without becoming public.
 
-## Generated paths
+## Authored vs generated files
 
-The following are generated and should not be edited manually:
+Edit these directly:
 
+- `docs.template.json` — Daylight-wide Mintlify configuration, global navigation, and hand-authored redirects
+- `index.mdx` — Daylight landing page
+- publisher/workflow/test files
+
+Generated files should not be edited directly:
+
+- `docs.json` — composed Mintlify configuration
 - `card/`
 - `.sync/card-release`
-- `.sync/card-generated-redirects.json`
-- Card-derived navigation and compatibility redirects in `docs.json`
+- `.sync/card-config.json`
 - `images/`, `favicon.ico`, and `style.css` while the Card remains the source of the shared Daylight visual assets
 
-The publisher records the exact redirects it generated so future rebuilds can replace only those entries. Hand-authored Daylight redirects remain untouched.
+Each product owns its generated config fragment. Composing from the template plus fragments avoids inferring ownership from previous `docs.json` output, preserves hand-authored Daylight redirects even when they match generated values, and allows future products to coexist without one product sync erasing another.
 
-The site-wide landing page and global Mintlify configuration remain intentionally authored here.
+Only publishing metadata/assets at the root of a product's `docs/` directory are excluded from that product's namespaced copy. Same-named nested directories such as `guides/images/` remain intact.
 
 ## Validation
 
-The publisher is implemented in `scripts/publish_product_docs.py` and covered by standard-library unit tests. Pull requests validate `docs.json` and run the publisher tests before merge.
+The publisher is implemented in `scripts/publish_product_docs.py` and covered by standard-library unit tests. Pull requests validate both Mintlify JSON files and run the publisher tests before merge.
