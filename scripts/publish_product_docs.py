@@ -33,6 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--product-icon", required=True)
     parser.add_argument("--release-tag", required=True)
     parser.add_argument("--publish-shared-assets", action="store_true")
+    parser.add_argument("--preserve-legacy-root-urls", action="store_true")
     return parser.parse_args()
 
 
@@ -120,8 +121,12 @@ def namespace_destination(destination: str, product_key: str) -> str:
     return f"/{product_key}{destination}"
 
 
-def translated_source_redirects(source_config: dict, product_key: str) -> list[dict]:
-    """Translate product-local redirects for both legacy and namespaced URLs."""
+def translated_source_redirects(
+    source_config: dict,
+    product_key: str,
+    preserve_legacy_root_urls: bool,
+) -> list[dict]:
+    """Translate product-local redirects into the combined site namespace."""
     generated: list[dict] = []
 
     for redirect in source_config.get("redirects", []):
@@ -145,10 +150,11 @@ def translated_source_redirects(source_config: dict, product_key: str) -> list[d
         namespaced["destination"] = destination
         generated.append(namespaced)
 
-        legacy = dict(redirect)
-        legacy["source"] = source
-        legacy["destination"] = destination
-        generated.append(legacy)
+        if preserve_legacy_root_urls:
+            legacy = dict(redirect)
+            legacy["source"] = source
+            legacy["destination"] = destination
+            generated.append(legacy)
 
     return generated
 
@@ -159,6 +165,7 @@ def build_product_fragment(
     product_label: str,
     product_icon: str,
     routes: set[str],
+    preserve_legacy_root_urls: bool,
 ) -> dict:
     groups = source_config.get("navigation", {}).get("groups")
     if not isinstance(groups, list):
@@ -175,18 +182,23 @@ def build_product_fragment(
 
     redirects_by_source: dict[str, dict] = {}
 
-    for redirect in translated_source_redirects(source_config, product_key):
+    for redirect in translated_source_redirects(
+        source_config,
+        product_key,
+        preserve_legacy_root_urls,
+    ):
         redirects_by_source[redirect["source"]] = redirect
 
     # Current routes take precedence over historical product redirects.
     for route in sorted(routes):
         if route == "index":
             continue
-        redirects_by_source[f"/{route}"] = {
-            "source": f"/{route}",
-            "destination": f"/{product_key}/{route}",
-            "permanent": True,
-        }
+        if preserve_legacy_root_urls:
+            redirects_by_source[f"/{route}"] = {
+                "source": f"/{route}",
+                "destination": f"/{product_key}/{route}",
+                "permanent": True,
+            }
 
     return {
         "product_key": product_key,
@@ -290,6 +302,7 @@ def publish(
     product_icon: str,
     release_tag: str,
     publish_shared_assets: bool,
+    preserve_legacy_root_urls: bool,
     repo_root: pathlib.Path = pathlib.Path("."),
 ) -> None:
     source_config_path = source_docs / "docs.json"
@@ -316,6 +329,7 @@ def publish(
         product_label,
         product_icon,
         routes,
+        preserve_legacy_root_urls,
     )
 
     sync_dir = repo_root / ".sync"
@@ -344,6 +358,7 @@ def main() -> None:
         product_icon=args.product_icon,
         release_tag=args.release_tag,
         publish_shared_assets=args.publish_shared_assets,
+        preserve_legacy_root_urls=args.preserve_legacy_root_urls,
     )
 
 
