@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - ".github/workflows/sync-released-docs.yml"
+      - "docs.template.json"
       - "scripts/publish_product_docs.py"
   workflow_dispatch:
   schedule:
@@ -76,7 +77,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add -A --             .sync/card-release             .sync/card-generated-redirects.json             card             docs.json             images             favicon.ico             style.css
+          git add -A --             .sync/card-release             .sync/card-config.json             card             docs.json             images             favicon.ico             style.css
 
           if git diff --cached --quiet; then
             echo "Published output already matches $RELEASE_TAG."
