@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import re
 import shutil
+from urllib.parse import urlsplit
 
 
 ROOT_ONLY_EXCLUDES = {
@@ -19,10 +21,24 @@ ROOT_ONLY_EXCLUDES = {
     "favicon.ico",
 }
 
+NAVIGATION_PATH_FIELDS = {"pages", "root", "href"}
+
 ATTRIBUTE_LINK = re.compile(
     r'(?P<prefix>\b(?:href|src)=(?P<quote>["\']))(?P<target>/[^"\']*)(?P=quote)'
 )
-MARKDOWN_LINK = re.compile(r'(?P<prefix>\]\()(?P<target>/[^)\s]*)(?P<suffix>\))')
+MARKDOWN_ANGLE_LINK = re.compile(
+    r'(?P<prefix>\]\(\s*<)(?P<target>/[^>\n]+)(?P<suffix>>(?:\s+(?:"[^"]*"|\'[^\']*\'|\([^)]*\)))?\s*\))'
+)
+MARKDOWN_LINK = re.compile(
+    r'(?P<prefix>\]\(\s*)(?P<target>/[^\s)\n]+)(?P<suffix>(?:\s+(?:"[^"]*"|\'[^\']*\'|\([^)]*\)))?\s*\))'
+)
+REFERENCE_ANGLE_LINK = re.compile(
+    r'(?m)(?P<prefix>^[ \t]{0,3}\[[^\]\n]+\]:[ \t]*<)(?P<target>/[^>\n]+)(?P<suffix>>)'
+)
+REFERENCE_LINK = re.compile(
+    r'(?m)(?P<prefix>^[ \t]{0,3}\[[^\]\n]+\]:[ \t]*)(?P<target>/[^\s\n]+)'
+)
+FENCE_START = re.compile(r'^[ \t]{0,3}(?P<fence>`{3,}|~{3,})')
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,24 +53,59 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def prefix_navigation(value, product_key: str):
+def validate_product_key(product_key: str) -> None:
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", product_key):
+        raise ValueError(f"Invalid product key: {product_key!r}")
+
+
+def is_external_target(value: str) -> bool:
+    if value.startswith(("#", "//")):
+        return True
+    parsed = urlsplit(value)
+    return bool(parsed.scheme or parsed.netloc)
+
+
+def namespace_navigation_path(value: str, product_key: str) -> str:
+    if not value or is_external_target(value):
+        return value
+
+    match = re.match(r"(?P<path>[^?#]*)(?P<suffix>[?#].*)?$", value)
+    if not match:
+        return value
+
+    path_part = match.group("path")
+    suffix = match.group("suffix") or ""
+    leading_slash = path_part.startswith("/")
+    relative = path_part.lstrip("/")
+
+    if not relative:
+        namespaced = product_key
+    elif relative == product_key or relative.startswith(f"{product_key}/"):
+        return value
+    else:
+        namespaced = f"{product_key}/{relative}"
+
+    if leading_slash:
+        namespaced = f"/{namespaced}"
+    return f"{namespaced}{suffix}"
+
+
+def prefix_navigation(value, product_key: str, parent_key: str | None = None):
+    if isinstance(value, str):
+        if parent_key in NAVIGATION_PATH_FIELDS:
+            return namespace_navigation_path(value, product_key)
+        return value
+
     if isinstance(value, list):
-        return [prefix_navigation(item, product_key) for item in value]
+        return [prefix_navigation(item, product_key, parent_key) for item in value]
+
     if not isinstance(value, dict):
         return value
 
-    result = {}
-    for key, child in value.items():
-        if key == "pages" and isinstance(child, list):
-            result[key] = [
-                f"{product_key}/{item.lstrip('/')}"
-                if isinstance(item, str)
-                else prefix_navigation(item, product_key)
-                for item in child
-            ]
-        else:
-            result[key] = prefix_navigation(child, product_key)
-    return result
+    return {
+        key: prefix_navigation(child, product_key, key)
+        for key, child in value.items()
+    }
 
 
 def discover_routes(product_root: pathlib.Path) -> set[str]:
@@ -64,13 +115,25 @@ def discover_routes(product_root: pathlib.Path) -> set[str]:
     }
 
 
+def product_local_path_exists(product_root: pathlib.Path, relative: str) -> bool:
+    root = product_root.resolve()
+    candidate = (root / relative).resolve()
+
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return False
+
+    return candidate.exists()
+
+
 def namespace_local_target(
     target: str,
     product_root: pathlib.Path,
     product_key: str,
     routes: set[str],
 ) -> str:
-    if not target.startswith("/") or target == "/":
+    if not target.startswith("/") or target.startswith("//") or target == "/":
         return target
 
     match = re.match(r"(?P<path>[^?#]*)(?P<suffix>[?#].*)?$", target)
@@ -80,14 +143,29 @@ def namespace_local_target(
     path_part = match.group("path")
     suffix = match.group("suffix") or ""
     relative = path_part.lstrip("/")
+    route = relative.rstrip("/")
 
-    if relative in routes or (product_root / relative).exists():
+    if route in routes or product_local_path_exists(product_root, relative):
         return f"/{product_key}/{relative}{suffix}"
 
     return target
 
 
-def rewrite_product_links(product_root: pathlib.Path, product_key: str, routes: set[str]) -> None:
+def rewrite_visible_segment(
+    text: str,
+    product_root: pathlib.Path,
+    product_key: str,
+    routes: set[str],
+) -> str:
+    def rewrite_with_suffix(match: re.Match[str]) -> str:
+        target = namespace_local_target(
+            match.group("target"),
+            product_root,
+            product_key,
+            routes,
+        )
+        return f"{match.group('prefix')}{target}{match.groupdict().get('suffix', '')}"
+
     def rewrite_attribute(match: re.Match[str]) -> str:
         target = namespace_local_target(
             match.group("target"),
@@ -97,20 +175,106 @@ def rewrite_product_links(product_root: pathlib.Path, product_key: str, routes: 
         )
         return f"{match.group('prefix')}{target}{match.group('quote')}"
 
-    def rewrite_markdown(match: re.Match[str]) -> str:
-        target = namespace_local_target(
-            match.group("target"),
-            product_root,
-            product_key,
-            routes,
-        )
-        return f"{match.group('prefix')}{target}{match.group('suffix')}"
+    text = ATTRIBUTE_LINK.sub(rewrite_attribute, text)
+    text = MARKDOWN_ANGLE_LINK.sub(rewrite_with_suffix, text)
+    text = MARKDOWN_LINK.sub(rewrite_with_suffix, text)
+    text = REFERENCE_ANGLE_LINK.sub(rewrite_with_suffix, text)
+    text = REFERENCE_LINK.sub(rewrite_with_suffix, text)
+    return text
 
+
+def rewrite_outside_inline_code(
+    line: str,
+    product_root: pathlib.Path,
+    product_key: str,
+    routes: set[str],
+) -> str:
+    output: list[str] = []
+    position = 0
+
+    while True:
+        opener = re.search(r"`+", line[position:])
+        if not opener:
+            output.append(
+                rewrite_visible_segment(
+                    line[position:],
+                    product_root,
+                    product_key,
+                    routes,
+                )
+            )
+            break
+
+        start = position + opener.start()
+        run = opener.group()
+        output.append(
+            rewrite_visible_segment(
+                line[position:start],
+                product_root,
+                product_key,
+                routes,
+            )
+        )
+
+        closer = re.search(
+            rf"(?<!`){re.escape(run)}(?!`)",
+            line[start + len(run):],
+        )
+        if not closer:
+            output.append(
+                rewrite_visible_segment(
+                    line[start:],
+                    product_root,
+                    product_key,
+                    routes,
+                )
+            )
+            break
+
+        end = start + len(run) + closer.end()
+        output.append(line[start:end])
+        position = end
+
+    return "".join(output)
+
+
+def rewrite_product_links(product_root: pathlib.Path, product_key: str, routes: set[str]) -> None:
     for mdx_path in product_root.rglob("*.mdx"):
-        text = mdx_path.read_text()
-        text = ATTRIBUTE_LINK.sub(rewrite_attribute, text)
-        text = MARKDOWN_LINK.sub(rewrite_markdown, text)
-        mdx_path.write_text(text)
+        output: list[str] = []
+        fence_char: str | None = None
+        fence_length = 0
+
+        for line in mdx_path.read_text().splitlines(keepends=True):
+            stripped = line.rstrip("\r\n")
+
+            if fence_char is not None:
+                output.append(line)
+                if re.fullmatch(
+                    rf"[ \t]{{0,3}}{re.escape(fence_char)}{{{fence_length},}}[ \t]*",
+                    stripped,
+                ):
+                    fence_char = None
+                    fence_length = 0
+                continue
+
+            fence = FENCE_START.match(stripped)
+            if fence:
+                delimiter = fence.group("fence")
+                fence_char = delimiter[0]
+                fence_length = len(delimiter)
+                output.append(line)
+                continue
+
+            output.append(
+                rewrite_outside_inline_code(
+                    line,
+                    product_root,
+                    product_key,
+                    routes,
+                )
+            )
+
+        mdx_path.write_text("".join(output))
 
 
 def namespace_destination(destination: str, product_key: str) -> str:
@@ -189,10 +353,13 @@ def build_product_fragment(
     ):
         redirects_by_source[redirect["source"]] = redirect
 
-    # Current routes take precedence over historical product redirects.
+    # Current pages must never be shadowed by historical redirects.
     for route in sorted(routes):
         if route == "index":
             continue
+
+        redirects_by_source.pop(f"/{product_key}/{route}", None)
+
         if preserve_legacy_root_urls:
             redirects_by_source[f"/{route}"] = {
                 "source": f"/{route}",
@@ -226,34 +393,75 @@ def compose_site_config(
         for item in tabs
         if isinstance(item, dict) and isinstance(item.get("tab"), str)
     }
-    used_redirect_sources = {
+    authored_redirect_sources = {
         item.get("source")
         for item in redirects
         if isinstance(item, dict) and isinstance(item.get("source"), str)
     }
+    generated_tab_owners: dict[str, str] = {}
+    generated_redirect_owners: dict[str, str] = {}
 
     for fragment_path in sorted(fragments_dir.glob("*-config.json")):
         fragment = json.loads(fragment_path.read_text())
+        fragment_product_key = fragment.get("product_key")
+
+        if (
+            not isinstance(fragment_product_key, str)
+            or fragment_path.name != f"{fragment_product_key}-config.json"
+        ):
+            raise ValueError(f"Invalid product fragment identity: {fragment_path}")
 
         tab = fragment.get("tab")
         if not isinstance(tab, dict) or not isinstance(tab.get("tab"), str):
             raise ValueError(f"Invalid product tab fragment: {fragment_path}")
-        if tab["tab"] not in authored_tab_names:
-            tabs.append(tab)
-            authored_tab_names.add(tab["tab"])
+
+        tab_name = tab["tab"]
+        if tab_name in authored_tab_names:
+            raise ValueError(
+                f"Product tab {tab_name!r} conflicts with authored navigation"
+            )
+        if tab_name in generated_tab_owners:
+            raise ValueError(
+                f"Product tab {tab_name!r} conflicts between "
+                f"{generated_tab_owners[tab_name]!r} and {fragment_product_key!r}"
+            )
+
+        tabs.append(tab)
+        generated_tab_owners[tab_name] = fragment_product_key
 
         for redirect in fragment.get("redirects", []):
             if not isinstance(redirect, dict):
                 raise ValueError(f"Invalid redirect in product fragment: {fragment_path}")
+
             source = redirect.get("source")
             if not isinstance(source, str):
                 raise ValueError(f"Redirect without source in product fragment: {fragment_path}")
-            if source in used_redirect_sources:
+
+            # Authored Daylight redirects intentionally override product output.
+            if source in authored_redirect_sources:
                 continue
+
+            if source in generated_redirect_owners:
+                raise ValueError(
+                    f"Redirect source {source!r} conflicts between "
+                    f"{generated_redirect_owners[source]!r} and {fragment_product_key!r}"
+                )
+
             redirects.append(redirect)
-            used_redirect_sources.add(source)
+            generated_redirect_owners[source] = fragment_product_key
 
     output_path.write_text(json.dumps(root, indent=2) + "\n")
+
+
+def reject_symlinks(source_docs: pathlib.Path) -> None:
+    if source_docs.is_symlink():
+        raise ValueError(f"Source docs path must not be a symlink: {source_docs}")
+
+    for directory, dirnames, filenames in os.walk(source_docs, followlinks=False):
+        for name in [*dirnames, *filenames]:
+            path = pathlib.Path(directory) / name
+            if path.is_symlink():
+                raise ValueError(f"Source docs must not contain symlinks: {path}")
 
 
 def root_only_ignore(source_docs: pathlib.Path):
@@ -268,6 +476,8 @@ def root_only_ignore(source_docs: pathlib.Path):
 
 
 def copy_product_docs(source_docs: pathlib.Path, product_root: pathlib.Path) -> None:
+    reject_symlinks(source_docs)
+
     if product_root.exists():
         shutil.rmtree(product_root)
 
@@ -305,6 +515,9 @@ def publish(
     preserve_legacy_root_urls: bool,
     repo_root: pathlib.Path = pathlib.Path("."),
 ) -> None:
+    validate_product_key(product_key)
+    reject_symlinks(source_docs)
+
     source_config_path = source_docs / "docs.json"
     if not source_config_path.is_file():
         raise ValueError("Source docs directory is missing docs.json")
