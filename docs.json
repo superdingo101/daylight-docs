@@ -53,13 +53,7 @@
         }
       ]
     },
-    "tabs": [
-      {
-        "tab": "Calendar Card",
-        "icon": "calendar-days",
-        "groups": []
-      }
-    ]
+    "tabs": []
   },
   "redirects": []
 }
