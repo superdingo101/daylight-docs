@@ -1,0 +1,59 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "almond",
+  "name": "Daylight",
+  "description": "Daylight brings a better calendar experience to Home Assistant — display calendars beautifully, import events with your own AI, or use a managed hosted option.",
+  "colors": {
+    "primary": "#242424",
+    "light": "#aeaeac",
+    "dark": "#484641"
+  },
+  "favicon": {
+    "light": "/images/977.ico",
+    "dark": "/images/977.ico"
+  },
+  "icons": {
+    "library": "lucide"
+  },
+  "styling": {
+    "eyebrows": "breadcrumbs"
+  },
+  "contextual": {
+    "options": [
+      "copy",
+      "view",
+      "assistant",
+      "mcp",
+      "add-mcp"
+    ]
+  },
+  "logo": {
+    "light": "/images/976.png",
+    "dark": "/images/976.png"
+  },
+  "navbar": {
+    "links": [],
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/superdingo101"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/superdingo101"
+    }
+  },
+  "navigation": {
+    "global": {
+      "anchors": [
+        {
+          "anchor": "Home",
+          "icon": "house",
+          "href": "/"
+        }
+      ]
+    },
+    "tabs": []
+  },
+  "redirects": []
+}
