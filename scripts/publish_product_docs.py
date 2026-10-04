@@ -82,9 +82,62 @@ def rewrite_product_links(product_root: pathlib.Path, product_key: str, routes: 
         mdx_path.write_text(text)
 
 
+def namespace_destination(destination: str, product_key: str) -> str:
+    if not destination.startswith("/"):
+        return destination
+    if destination == "/":
+        return f"/{product_key}"
+    return f"/{product_key}{destination}"
+
+
+def source_redirects(source_config: dict, product_key: str) -> list[dict]:
+    """Translate product-local redirects into combined-site compatibility redirects."""
+    generated: list[dict] = []
+
+    for redirect in source_config.get("redirects", []):
+        if not isinstance(redirect, dict):
+            continue
+
+        source = redirect.get("source")
+        destination = redirect.get("destination")
+        if not isinstance(source, str) or not isinstance(destination, str):
+            continue
+
+        # The product's old site-root behavior does not carry into the combined
+        # Daylight site. / is now the Daylight landing page and /<product> has
+        # its own generated index page.
+        if source == "/":
+            continue
+
+        destination = namespace_destination(destination, product_key)
+
+        namespaced = dict(redirect)
+        namespaced["source"] = f"/{product_key}{source}"
+        namespaced["destination"] = destination
+        generated.append(namespaced)
+
+        legacy = dict(redirect)
+        legacy["source"] = source
+        legacy["destination"] = destination
+        generated.append(legacy)
+
+    return generated
+
+
+def load_previous_generated_redirects(state_path: pathlib.Path) -> list[dict]:
+    if not state_path.is_file():
+        return []
+
+    value = json.loads(state_path.read_text())
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        raise ValueError(f"Invalid generated redirect state: {state_path}")
+    return value
+
+
 def update_site_config(
     root_config_path: pathlib.Path,
     source_config_path: pathlib.Path,
+    redirect_state_path: pathlib.Path,
     product_key: str,
     product_label: str,
     product_icon: str,
@@ -122,23 +175,42 @@ def update_site_config(
         tab["groups"] = generated_groups
         tab.pop("pages", None)
 
-    redirects = [
-        item
-        for item in root.get("redirects", [])
-        if not str(item.get("destination", "")).startswith(f"/{product_key}/")
+    previous_generated = load_previous_generated_redirects(redirect_state_path)
+    authored_redirects = [
+        item for item in root.get("redirects", []) if item not in previous_generated
     ]
-    redirects.extend(
-        {
+    authored_sources = {
+        item.get("source")
+        for item in authored_redirects
+        if isinstance(item, dict) and isinstance(item.get("source"), str)
+    }
+
+    generated_by_source: dict[str, dict] = {}
+
+    for redirect in source_redirects(source, product_key):
+        generated_by_source[redirect["source"]] = redirect
+
+    # Current routes take precedence over historical source redirects.
+    for route in sorted(routes):
+        if route == "index":
+            continue
+        generated_by_source[f"/{route}"] = {
             "source": f"/{route}",
             "destination": f"/{product_key}/{route}",
             "permanent": True,
         }
-        for route in sorted(routes)
-        if route != "index"
-    )
-    root["redirects"] = redirects
 
+    generated_redirects = [
+        redirect
+        for source_path, redirect in generated_by_source.items()
+        if source_path not in authored_sources
+    ]
+
+    root["redirects"] = [*authored_redirects, *generated_redirects]
     root_config_path.write_text(json.dumps(root, indent=2) + "\n")
+
+    redirect_state_path.parent.mkdir(exist_ok=True)
+    redirect_state_path.write_text(json.dumps(generated_redirects, indent=2) + "\n")
 
 
 def copy_product_docs(source_docs: pathlib.Path, product_root: pathlib.Path) -> None:
@@ -194,9 +266,15 @@ def publish(
         raise ValueError("Product docs must contain index.mdx")
 
     rewrite_product_links(product_root, product_key, routes)
+
+    sync_dir = repo_root / ".sync"
+    sync_dir.mkdir(exist_ok=True)
+    redirect_state = sync_dir / f"{product_key}-generated-redirects.json"
+
     update_site_config(
         root_config,
         source_config,
+        redirect_state,
         product_key,
         product_label,
         product_icon,
@@ -206,8 +284,6 @@ def publish(
     if publish_shared_assets:
         copy_shared_assets(source_docs, repo_root)
 
-    sync_dir = repo_root / ".sync"
-    sync_dir.mkdir(exist_ok=True)
     (sync_dir / f"{product_key}-release").write_text(f"{release_tag}\n")
 
 
