@@ -17,9 +17,11 @@ For Daylight Calendar Card:
 
 1. Code, tests, and docs are changed together in the Card repository.
 2. A GitHub release is published from the Card repository.
-3. The sync workflow in this repository detects the new release tag.
-4. It copies that release's `docs/` content into `card/`, rewrites internal links for the combined site, and updates navigation.
+3. The sync workflow fetches the latest released tag and deterministically rebuilds the Card section.
+4. Git commits only when the generated site differs from what is already published.
 5. Mintlify deploys the resulting commit.
+
+Scheduled syncs detect new releases without cross-repository credentials. Manual syncs and publisher/workflow changes rebuild the current release immediately, so fixes to publishing logic do not have to wait for another Card release.
 
 This means unreleased documentation can live on the Card repository's normal development branch without becoming public.
 
@@ -28,9 +30,12 @@ This means unreleased documentation can live on the Card repository's normal dev
 The following are generated and should not be edited manually:
 
 - `card/`
-- `.sources/card.docs.json`
 - `.sync/card-release`
 - Card-derived navigation and redirects in `docs.json`
 - `images/`, `favicon.ico`, and `style.css` while the Card remains the source of the shared Daylight visual assets
 
 The site-wide landing page and global Mintlify configuration remain intentionally authored here.
+
+## Validation
+
+The publisher is implemented in `scripts/publish_product_docs.py` and covered by standard-library unit tests. Pull requests validate `docs.json` and run the publisher tests before merge.
