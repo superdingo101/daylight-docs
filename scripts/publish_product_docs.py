@@ -17,9 +17,12 @@ ROOT_ONLY_EXCLUDES = {
     ".atlas-analysis.json",
     "style.css",
     "favicon.ico",
-    "images",
-    "logo",
 }
+
+ATTRIBUTE_LINK = re.compile(
+    r'(?P<prefix>\b(?:href|src)=(?P<quote>["\']))(?P<target>/[^"\']*)(?P=quote)'
+)
+MARKDOWN_LINK = re.compile(r'(?P<prefix>\]\()(?P<target>/[^)\s]*)(?P<suffix>\))')
 
 
 def parse_args() -> argparse.Namespace:
@@ -60,25 +63,52 @@ def discover_routes(product_root: pathlib.Path) -> set[str]:
     }
 
 
+def namespace_local_target(
+    target: str,
+    product_root: pathlib.Path,
+    product_key: str,
+    routes: set[str],
+) -> str:
+    if not target.startswith("/") or target == "/":
+        return target
+
+    match = re.match(r"(?P<path>[^?#]*)(?P<suffix>[?#].*)?$", target)
+    if not match:
+        return target
+
+    path_part = match.group("path")
+    suffix = match.group("suffix") or ""
+    relative = path_part.lstrip("/")
+
+    if relative in routes or (product_root / relative).exists():
+        return f"/{product_key}/{relative}{suffix}"
+
+    return target
+
+
 def rewrite_product_links(product_root: pathlib.Path, product_key: str, routes: set[str]) -> None:
-    targets = sorted(routes, key=len, reverse=True)
+    def rewrite_attribute(match: re.Match[str]) -> str:
+        target = namespace_local_target(
+            match.group("target"),
+            product_root,
+            product_key,
+            routes,
+        )
+        return f"{match.group('prefix')}{target}{match.group('quote')}"
+
+    def rewrite_markdown(match: re.Match[str]) -> str:
+        target = namespace_local_target(
+            match.group("target"),
+            product_root,
+            product_key,
+            routes,
+        )
+        return f"{match.group('prefix')}{target}{match.group('suffix')}"
 
     for mdx_path in product_root.rglob("*.mdx"):
         text = mdx_path.read_text()
-
-        for target in targets:
-            escaped = re.escape(target)
-            text = re.sub(
-                rf'href=(["\'])/{escaped}(?=(?:[#?][^"\']*)?["\'])',
-                rf'href=\1/{product_key}/{target}',
-                text,
-            )
-            text = re.sub(
-                rf'\]\(/{escaped}(?=(?:[#?][^)]*)?\))',
-                rf'](/{product_key}/{target}',
-                text,
-            )
-
+        text = ATTRIBUTE_LINK.sub(rewrite_attribute, text)
+        text = MARKDOWN_LINK.sub(rewrite_markdown, text)
         mdx_path.write_text(text)
 
 
@@ -184,7 +214,7 @@ def compose_site_config(
         for item in tabs
         if isinstance(item, dict) and isinstance(item.get("tab"), str)
     }
-    authored_redirect_sources = {
+    used_redirect_sources = {
         item.get("source")
         for item in redirects
         if isinstance(item, dict) and isinstance(item.get("source"), str)
@@ -198,6 +228,7 @@ def compose_site_config(
             raise ValueError(f"Invalid product tab fragment: {fragment_path}")
         if tab["tab"] not in authored_tab_names:
             tabs.append(tab)
+            authored_tab_names.add(tab["tab"])
 
         for redirect in fragment.get("redirects", []):
             if not isinstance(redirect, dict):
@@ -205,10 +236,10 @@ def compose_site_config(
             source = redirect.get("source")
             if not isinstance(source, str):
                 raise ValueError(f"Redirect without source in product fragment: {fragment_path}")
-            if source in authored_redirect_sources:
+            if source in used_redirect_sources:
                 continue
             redirects.append(redirect)
-            authored_redirect_sources.add(source)
+            used_redirect_sources.add(source)
 
     output_path.write_text(json.dumps(root, indent=2) + "\n")
 
