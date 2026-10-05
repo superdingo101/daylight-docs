@@ -95,11 +95,19 @@ def prefix_navigation(value, product_key: str, parent_key: str | None = None):
     }
 
 
-def discover_routes(product_root: pathlib.Path) -> set[str]:
+def discover_routes(
+    product_root: pathlib.Path,
+    excluded_paths: set[str] | None = None,
+) -> set[str]:
     route_sources: dict[str, pathlib.Path] = {}
+    excluded_paths = excluded_paths or set()
 
     for suffix in (".mdx", ".md"):
         for path in product_root.rglob(f"*{suffix}"):
+            relative_path = path.relative_to(product_root).as_posix()
+            if relative_path in excluded_paths:
+                continue
+
             route = str(path.relative_to(product_root).with_suffix("")).replace("\\", "/")
             previous = route_sources.get(route)
             if previous is not None:
@@ -109,6 +117,21 @@ def discover_routes(product_root: pathlib.Path) -> set[str]:
             route_sources[route] = path
 
     return set(route_sources)
+
+
+def ignored_documentation_routes(
+    source_docs: pathlib.Path,
+    ignored_paths: set[str],
+) -> set[str]:
+    routes: set[str] = set()
+
+    for relative in ignored_paths:
+        path = pathlib.PurePosixPath(relative)
+        if path.suffix not in {".md", ".mdx"}:
+            continue
+        routes.add(str(path.with_suffix("")))
+
+    return routes
 
 
 def normalized_local_route(value: str, product_key: str) -> str | None:
@@ -541,8 +564,9 @@ def publish(
         raise ValueError("Publishing repository is missing docs.template.json")
 
     source_config = json.loads(source_config_path.read_text())
-    source_routes = discover_routes(source_docs)
     ignored_paths = mintignored_paths(source_docs)
+    source_routes = discover_routes(source_docs, ignored_paths)
+    ignored_routes = ignored_documentation_routes(source_docs, ignored_paths)
 
     sync_dir = repo_root / ".sync"
     sync_dir.mkdir(exist_ok=True)
@@ -552,10 +576,11 @@ def publish(
     copy_product_docs(source_docs, product_root, ignored_paths)
 
     routes = discover_routes(product_root)
+    if routes != source_routes:
+        raise ValueError("Published product routes do not match the filtered source routes")
     if "index" not in routes:
         raise ValueError("Product docs must contain a published index.mdx or index.md")
 
-    ignored_routes = source_routes - routes
     validate_ignored_routes_not_referenced(
         source_config,
         product_key,
