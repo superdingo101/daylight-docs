@@ -287,9 +287,10 @@ def validate_existing_fragment_product(
         raise ValueError(f"Product output path is not a managed directory: {product_root}")
 
     fragment_path = fragments_dir / f"{product_key}-config.json"
-    if not fragment_path.is_file():
+    release_marker = fragments_dir / f"{product_key}-release"
+    if not fragment_path.is_file() or not release_marker.is_file():
         raise ValueError(
-            f"Product key {product_key!r} collides with existing repository path: {product_root}"
+            f"Product key {product_key!r} collides with unmanaged or incomplete repository path: {product_root}"
         )
 
     fragment = json.loads(fragment_path.read_text())
@@ -485,6 +486,18 @@ def copy_shared_assets(
 ) -> None:
     ignore_callback = copy_ignore(source_docs, ignored_paths)
 
+    images_source = source_docs / "images"
+    if (
+        "images" in ignored_paths
+        or not images_source.is_dir()
+    ):
+        raise ValueError("Shared asset source is missing published docs/images")
+
+    for filename in SHARED_ASSET_FILES:
+        source = source_docs / filename
+        if filename in ignored_paths or not source.is_file():
+            raise ValueError(f"Shared asset source is missing published {filename}")
+
     for dirname in SHARED_ASSET_DIRECTORIES:
         source = source_docs / dirname
         target = repo_root / dirname
@@ -492,8 +505,6 @@ def copy_shared_assets(
             shutil.rmtree(target)
 
         if dirname in ignored_paths or not source.exists():
-            if dirname == "images":
-                raise ValueError("Shared asset source is missing published docs/images")
             continue
         if not source.is_dir():
             raise ValueError(f"Shared asset source is not a directory: {source}")
@@ -505,9 +516,6 @@ def copy_shared_assets(
         target = repo_root / filename
         if target.exists():
             target.unlink()
-
-        if filename in ignored_paths or not source.is_file():
-            raise ValueError(f"Shared asset source is missing published {filename}")
         shutil.copy2(source, target)
 
 
