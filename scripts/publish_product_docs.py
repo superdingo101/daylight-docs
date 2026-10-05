@@ -567,7 +567,10 @@ def publish(
     ignored_paths = mintignored_paths(source_docs)
     source_route_exclusions = ignored_paths | ROOT_ONLY_EXCLUDES
     source_routes = discover_routes(source_docs, source_route_exclusions)
-    ignored_routes = ignored_documentation_routes(source_docs, ignored_paths)
+    ignored_routes = (
+        ignored_documentation_routes(source_docs, ignored_paths)
+        - source_routes
+    )
 
     sync_dir = repo_root / ".sync"
     sync_dir.mkdir(exist_ok=True)
