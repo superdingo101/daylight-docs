@@ -320,6 +320,16 @@ class PublishProductDocsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Duplicate documentation route"):
             self.publish_card()
 
+    def test_ignored_duplicate_route_does_not_block_publish(self):
+        (self.source / "guides" / "setup.md").write_text("# Ignored duplicate\n")
+        with (self.source / ".mintignore").open("a") as ignore_file:
+            ignore_file.write("guides/setup.md\n")
+
+        self.publish_card()
+
+        self.assertTrue((self.root / "card" / "guides" / "setup.mdx").exists())
+        self.assertFalse((self.root / "card" / "guides" / "setup.md").exists())
+
     def test_publish_is_deterministic_when_repeated_for_same_release(self):
         self.publish_card()
         first_config = (self.root / "docs.json").read_text()
