@@ -272,7 +272,7 @@ class PublishProductDocsTests(unittest.TestCase):
         scripts = self.root / "scripts"
         scripts.mkdir()
         (scripts / "keep.py").write_text("# keep\n")
-        with self.assertRaisesRegex(ValueError, "collides with existing repository path"):
+        with self.assertRaisesRegex(ValueError, "collides with unmanaged or incomplete repository path"):
             publish(
                 source_docs=self.source,
                 product_key="scripts",
@@ -284,6 +284,23 @@ class PublishProductDocsTests(unittest.TestCase):
                 repo_root=self.root,
             )
         self.assertTrue((scripts / "keep.py").exists())
+
+    def test_existing_product_root_requires_complete_ownership_markers(self):
+        card = self.root / "card"
+        card.mkdir()
+        sync_dir = self.root / ".sync"
+        sync_dir.mkdir()
+        (sync_dir / "card-config.json").write_text(json.dumps({
+            "product_key": "card",
+            "tab": {"tab": "Calendar Card", "groups": []},
+            "redirects": [],
+        }))
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "unmanaged or incomplete repository path",
+        ):
+            self.publish_card()
 
     def test_generated_product_conflicts_fail_instead_of_silently_winning(self):
         sync_dir = self.root / ".sync"
