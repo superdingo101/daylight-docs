@@ -565,7 +565,8 @@ def publish(
 
     source_config = json.loads(source_config_path.read_text())
     ignored_paths = mintignored_paths(source_docs)
-    source_routes = discover_routes(source_docs, ignored_paths)
+    source_route_exclusions = ignored_paths | ROOT_ONLY_EXCLUDES
+    source_routes = discover_routes(source_docs, source_route_exclusions)
     ignored_routes = ignored_documentation_routes(source_docs, ignored_paths)
 
     sync_dir = repo_root / ".sync"
