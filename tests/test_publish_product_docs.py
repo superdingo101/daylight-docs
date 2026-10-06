@@ -10,8 +10,8 @@ class PublishProductDocsTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = pathlib.Path(self.temp.name)
-        self.source = self.root / "source"
-        self.source.mkdir()
+        self.source = self.root / ".tmp" / "card-source" / "docs"
+        self.source.mkdir(parents=True)
 
         self.manual_alias = {
             "source": "/calendar",
@@ -150,6 +150,35 @@ class PublishProductDocsTests(unittest.TestCase):
         self.assertEqual("card/introduction", card_tab["groups"][1]["root"])
         self.assertFalse(any(tab["tab"] == "Stale" for tab in config["navigation"]["tabs"]))
 
+    def test_local_api_spec_references_are_namespaced(self):
+        config = json.loads((self.source / "docs.json").read_text())
+        config["navigation"]["groups"].extend([
+            {
+                "group": "API",
+                "openapi": "openapi.json",
+                "asyncapi": {"source": "asyncapi.yaml"},
+            },
+            {
+                "group": "Remote API",
+                "openapi": "https://example.com/openapi.json",
+            },
+        ])
+        (self.source / "docs.json").write_text(json.dumps(config))
+        (self.source / "openapi.json").write_text("{}\n")
+        (self.source / "asyncapi.yaml").write_text("asyncapi: 3.0.0\n")
+
+        self.publish_card()
+
+        groups = self.read_config()["navigation"]["tabs"][1]["groups"]
+        api_group = next(group for group in groups if group["group"] == "API")
+        remote_group = next(group for group in groups if group["group"] == "Remote API")
+        self.assertEqual("card/openapi.json", api_group["openapi"])
+        self.assertEqual("card/asyncapi.yaml", api_group["asyncapi"]["source"])
+        self.assertEqual(
+            "https://example.com/openapi.json",
+            remote_group["openapi"],
+        )
+
     def test_authored_redirects_are_preserved_and_win_source_collisions(self):
         self.publish_card()
         redirects = self.read_config()["redirects"]
@@ -170,6 +199,23 @@ class PublishProductDocsTests(unittest.TestCase):
             redirects,
         )
 
+    def test_current_route_removes_covering_wildcard_redirects(self):
+        config = json.loads((self.source / "docs.json").read_text())
+        config["redirects"].append({
+            "source": "/guides/:slug*",
+            "destination": "/introduction",
+            "permanent": True,
+        })
+        (self.source / "docs.json").write_text(json.dumps(config))
+
+        self.publish_card()
+
+        fragment = json.loads((self.root / ".sync" / "card-config.json").read_text())
+        sources = {redirect["source"] for redirect in fragment["redirects"]}
+        self.assertNotIn("/card/guides/:slug*", sources)
+        self.assertNotIn("/guides/:slug*", sources)
+        self.assertIn("/guides/setup", sources)
+
     def test_product_content_is_copied_unchanged(self):
         source_index = (self.source / "index.mdx").read_text()
         self.publish_card()
@@ -180,6 +226,14 @@ class PublishProductDocsTests(unittest.TestCase):
         self.assertFalse((self.root / "card" / "drafts").exists())
         self.assertFalse((self.root / "card" / "scratch.draft.mdx").exists())
         self.assertFalse((self.root / "card" / ".mintignore").exists())
+
+    def test_mintignore_does_not_consult_source_gitignore(self):
+        (self.source / ".gitignore").write_text("gitignored-only.mdx\n")
+        (self.source / "gitignored-only.mdx").write_text("# Still published\n")
+
+        self.publish_card()
+
+        self.assertTrue((self.root / "card" / "gitignored-only.mdx").exists())
 
     def test_mintignored_navigation_target_fails_closed(self):
         config = json.loads((self.source / "docs.json").read_text())
@@ -207,6 +261,20 @@ class PublishProductDocsTests(unittest.TestCase):
         self.assertTrue((self.root / "logo" / "light.svg").exists())
         self.assertTrue((self.root / "favicon.ico").exists())
         self.assertTrue((self.root / "style.css").exists())
+
+    def test_authored_root_route_wins_over_legacy_alias(self):
+        authored = self.root / "guides" / "setup.mdx"
+        authored.parent.mkdir()
+        authored.write_text("# Daylight-owned setup\n")
+
+        self.publish_card()
+
+        redirects = self.read_config()["redirects"]
+        self.assertFalse(any(
+            redirect.get("source") == "/guides/setup"
+            and redirect.get("destination") == "/card/guides/setup"
+            for redirect in redirects
+        ))
 
     def test_non_shared_product_does_not_replace_global_assets(self):
         self.publish_card()
@@ -250,6 +318,15 @@ class PublishProductDocsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Stale or incomplete"):
             self.publish_card()
 
+    def test_release_marker_without_fragment_fails_closed(self):
+        sync_dir = self.root / ".sync"
+        sync_dir.mkdir()
+        (self.root / "import").mkdir()
+        (sync_dir / "import-release").write_text("v0.4.0\n")
+
+        with self.assertRaisesRegex(ValueError, "Stale or incomplete product ownership"):
+            self.publish_card()
+
     def test_rejects_symlinks_in_released_docs(self):
         target = self.root / "outside-secret"
         target.write_text("secret")
@@ -269,6 +346,18 @@ class PublishProductDocsTests(unittest.TestCase):
                 preserve_legacy_root_urls=False,
                 repo_root=self.root,
             )
+        with self.assertRaisesRegex(ValueError, "Invalid product key"):
+            publish(
+                source_docs=self.source,
+                product_key="api",
+                product_label="API",
+                product_icon="code",
+                release_tag="v1",
+                publish_shared_assets=False,
+                preserve_legacy_root_urls=False,
+                repo_root=self.root,
+            )
+
         scripts = self.root / "scripts"
         scripts.mkdir()
         (scripts / "keep.py").write_text("# keep\n")

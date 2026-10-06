@@ -53,7 +53,7 @@ Legacy root URLs are an explicit per-product capability: Calendar Card preserves
 Released product content is treated as data, not rewritten source:
 
 - symlinks anywhere under released `docs/` are rejected before copying;
-- product `.mintignore` rules are evaluated with Git's ignore engine and ignored files are not copied;
+- product `.mintignore` rules are evaluated in isolation with Git's ignore semantics (source `.gitignore` files and user/global Git excludes are not consulted), and ignored files are not copied;
 - if navigation or a redirect destination points at a page excluded by `.mintignore`, publishing fails closed;
 - `.md` and `.mdx` pages are both supported, and duplicate routes such as `guide.md` plus `guide.mdx` are rejected;
 - product MDX/Markdown is copied **unchanged** so code examples, reference links, frontmatter, and other literal content are never mutated by the publishing layer.

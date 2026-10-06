@@ -23,7 +23,10 @@ ROOT_ONLY_EXCLUDES = {
     "favicon.ico",
 }
 
-NAVIGATION_PATH_FIELDS = {"pages", "root", "href"}
+NAVIGATION_PATH_FIELDS = {"pages", "root", "href", "openapi", "asyncapi"}
+SPEC_REFERENCE_FIELDS = {"openapi", "asyncapi"}
+RESERVED_PRODUCT_KEYS = {"api"}
+AUTHORING_EXCLUDED_ROOTS = {".git", ".github", ".sync", ".tmp", "scripts", "tests"}
 SHARED_ASSET_DIRECTORIES = ("images", "logo")
 SHARED_ASSET_FILES = ("favicon.ico", "style.css")
 
@@ -41,7 +44,10 @@ def parse_args() -> argparse.Namespace:
 
 
 def validate_product_key(product_key: str) -> None:
-    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", product_key):
+    if (
+        not re.fullmatch(r"[a-z0-9][a-z0-9-]*", product_key)
+        or product_key in RESERVED_PRODUCT_KEYS
+    ):
         raise ValueError(f"Invalid product key: {product_key!r}")
 
 
@@ -89,10 +95,15 @@ def prefix_navigation(value, product_key: str, parent_key: str | None = None):
     if not isinstance(value, dict):
         return value
 
-    return {
-        key: prefix_navigation(child, product_key, key)
-        for key, child in value.items()
-    }
+    translated = {}
+    for key, child in value.items():
+        child_parent_key = (
+            parent_key
+            if parent_key in SPEC_REFERENCE_FIELDS and key == "source"
+            else key
+        )
+        translated[key] = prefix_navigation(child, product_key, child_parent_key)
+    return translated
 
 
 def discover_routes(
@@ -207,6 +218,33 @@ def namespace_destination(destination: str, product_key: str) -> str:
     return f"/{product_key}{destination}"
 
 
+def redirect_source_matches_path(source: str, path: str) -> bool:
+    """Return whether a Mintlify redirect source covers a concrete path."""
+    if source == path:
+        return True
+    if ":" not in source and "*" not in source:
+        return False
+
+    pattern_parts: list[str] = []
+    index = 0
+    while index < len(source):
+        if source[index] == ":":
+            match = re.match(r":[A-Za-z_][A-Za-z0-9_]*\*?", source[index:])
+            if match:
+                token = match.group(0)
+                pattern_parts.append(".*" if token.endswith("*") else "[^/]+")
+                index += len(token)
+                continue
+
+        if source[index] == "*":
+            pattern_parts.append(".*")
+        else:
+            pattern_parts.append(re.escape(source[index]))
+        index += 1
+
+    return re.fullmatch("".join(pattern_parts), path) is not None
+
+
 def translated_source_redirects(
     source_config: dict,
     product_key: str,
@@ -279,7 +317,16 @@ def build_product_fragment(
         if route == "index":
             continue
 
-        redirects_by_source.pop(f"/{product_key}/{route}", None)
+        current_paths = [f"/{product_key}/{route}"]
+        if preserve_legacy_root_urls:
+            current_paths.append(f"/{route}")
+
+        for redirect_source in list(redirects_by_source):
+            if any(
+                redirect_source_matches_path(redirect_source, current_path)
+                for current_path in current_paths
+            ):
+                redirects_by_source.pop(redirect_source)
 
         if preserve_legacy_root_urls:
             redirects_by_source[f"/{route}"] = {
@@ -321,6 +368,72 @@ def validate_existing_fragment_product(
         raise ValueError(f"Product output ownership mismatch: {product_root}")
 
 
+def validated_product_fragments(
+    fragments_dir: pathlib.Path,
+    repo_root: pathlib.Path,
+) -> list[tuple[str, pathlib.Path]]:
+    fragment_paths = {
+        path.name[: -len("-config.json")]: path
+        for path in fragments_dir.glob("*-config.json")
+    }
+    release_paths = {
+        path.name[: -len("-release")]: path
+        for path in fragments_dir.glob("*-release")
+    }
+
+    if fragment_paths.keys() != release_paths.keys():
+        missing_fragments = sorted(release_paths.keys() - fragment_paths.keys())
+        missing_releases = sorted(fragment_paths.keys() - release_paths.keys())
+        raise ValueError(
+            "Stale or incomplete product ownership state: "
+            f"missing fragments={missing_fragments}, missing releases={missing_releases}"
+        )
+
+    validated: list[tuple[str, pathlib.Path]] = []
+    for product_key in sorted(fragment_paths):
+        validate_product_key(product_key)
+        fragment_path = fragment_paths[product_key]
+        release_marker = release_paths[product_key]
+        product_root = repo_root / product_key
+
+        if (
+            not fragment_path.is_file()
+            or not release_marker.is_file()
+            or product_root.is_symlink()
+            or not product_root.is_dir()
+        ):
+            raise ValueError(f"Stale or incomplete product fragment: {fragment_path}")
+
+        validated.append((product_key, fragment_path))
+
+    return validated
+
+
+def discover_authored_routes(
+    repo_root: pathlib.Path,
+    product_keys: set[str],
+) -> set[str]:
+    excluded_roots = AUTHORING_EXCLUDED_ROOTS | product_keys
+    route_sources: dict[str, pathlib.Path] = {}
+
+    for suffix in (".mdx", ".md"):
+        for path in repo_root.rglob(f"*{suffix}"):
+            relative = path.relative_to(repo_root)
+            if len(relative.parts) > 1 and relative.parts[0] in excluded_roots:
+                continue
+
+            route = str(relative.with_suffix("")).replace("\\", "/")
+            previous = route_sources.get(route)
+            if previous is not None:
+                raise ValueError(
+                    f"Duplicate authored documentation route {route!r}: "
+                    f"{previous} and {path}"
+                )
+            route_sources[route] = path
+
+    return set(route_sources)
+
+
 def compose_site_config(
     template_path: pathlib.Path,
     output_path: pathlib.Path,
@@ -344,21 +457,22 @@ def compose_site_config(
     generated_tab_owners: dict[str, str] = {}
     generated_redirect_owners: dict[str, str] = {}
 
-    for fragment_path in sorted(fragments_dir.glob("*-config.json")):
+    product_fragments = validated_product_fragments(
+        fragments_dir,
+        output_path.parent,
+    )
+    product_keys = {product_key for product_key, _ in product_fragments}
+    authored_route_paths = {
+        f"/{route}"
+        for route in discover_authored_routes(output_path.parent, product_keys)
+    }
+
+    for fragment_product_key, fragment_path in product_fragments:
         fragment = json.loads(fragment_path.read_text())
-        fragment_product_key = fragment.get("product_key")
+        recorded_product_key = fragment.get("product_key")
 
-        if not isinstance(fragment_product_key, str):
+        if recorded_product_key != fragment_product_key:
             raise ValueError(f"Invalid product fragment identity: {fragment_path}")
-        validate_product_key(fragment_product_key)
-
-        if fragment_path.name != f"{fragment_product_key}-config.json":
-            raise ValueError(f"Invalid product fragment identity: {fragment_path}")
-
-        product_root = output_path.parent / fragment_product_key
-        release_marker = fragments_dir / f"{fragment_product_key}-release"
-        if product_root.is_symlink() or not product_root.is_dir() or not release_marker.is_file():
-            raise ValueError(f"Stale or incomplete product fragment: {fragment_path}")
 
         tab = fragment.get("tab")
         if not isinstance(tab, dict) or not isinstance(tab.get("tab"), str):
@@ -389,6 +503,12 @@ def compose_site_config(
             if source in authored_redirect_sources:
                 continue
 
+            if any(
+                redirect_source_matches_path(source, route_path)
+                for route_path in authored_route_paths
+            ):
+                continue
+
             if source in generated_redirect_owners:
                 raise ValueError(
                     f"Redirect source {source!r} conflicts between "
@@ -417,30 +537,46 @@ def mintignored_paths(source_docs: pathlib.Path) -> set[str]:
     if not ignore_file.is_file():
         return set()
 
-    candidates = [
-        path.relative_to(source_docs).as_posix()
+    entries = [
+        (path, path.relative_to(source_docs).as_posix())
         for path in source_docs.rglob("*")
     ]
-    if not candidates:
+    if not entries:
         return set()
 
+    candidates = [relative for _, relative in entries]
+
     with tempfile.TemporaryDirectory() as temp_dir:
-        git_dir = pathlib.Path(temp_dir) / "git"
+        worktree = pathlib.Path(temp_dir) / "worktree"
         subprocess.run(
-            ["git", "init", "--bare", "--quiet", str(git_dir)],
+            ["git", "init", "--quiet", str(worktree)],
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
         )
-        env = os.environ.copy()
-        env["GIT_DIR"] = str(git_dir)
-        env["GIT_WORK_TREE"] = str(source_docs.resolve())
+
+        # Use only .mintignore as the ignore source. The mirrored worktree keeps
+        # directory-only gitignore semantics accurate without allowing source
+        # .gitignore files or user/global Git excludes to influence publication.
+        info_exclude = worktree / ".git" / "info" / "exclude"
+        info_exclude.write_text(ignore_file.read_text())
+
+        for source_path, relative in entries:
+            mirror_path = worktree / relative
+            if source_path.is_dir():
+                mirror_path.mkdir(parents=True, exist_ok=True)
+            else:
+                mirror_path.parent.mkdir(parents=True, exist_ok=True)
+                mirror_path.touch()
+
         payload = b"\0".join(os.fsencode(path) for path in candidates) + b"\0"
         result = subprocess.run(
             [
                 "git",
+                "-C",
+                str(worktree),
                 "-c",
-                f"core.excludesFile={ignore_file.resolve()}",
+                "core.excludesFile=/dev/null",
                 "check-ignore",
                 "--no-index",
                 "-z",
@@ -449,7 +585,6 @@ def mintignored_paths(source_docs: pathlib.Path) -> set[str]:
             input=payload,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            env=env,
         )
 
     if result.returncode not in (0, 1):
