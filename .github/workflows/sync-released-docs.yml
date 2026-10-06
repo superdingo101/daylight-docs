@@ -1,0 +1,112 @@
+name: Sync Released Product Docs
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/sync-released-docs.yml"
+      - "docs.template.json"
+      - "scripts/publish_product_docs.py"
+  workflow_dispatch:
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-released-product-docs
+  cancel-in-progress: false
+
+jobs:
+  sync-calendar-card:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout publishing repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch latest released Calendar Card docs
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          TAG="$(gh api repos/superdingo101/daylight-calendar-card/releases/latest --jq '.tag_name')"
+          unset GH_TOKEN
+          echo "Publishing Calendar Card docs from $TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          rm -rf .tmp/card-source
+          mkdir -p .tmp/card-source
+
+          git -C .tmp/card-source init
+          git -C .tmp/card-source remote add origin \
+            https://github.com/superdingo101/daylight-calendar-card.git
+
+          git -C .tmp/card-source fetch \
+            --depth 1 \
+            origin \
+            "refs/tags/$TAG:refs/tags/$TAG"
+
+          git -C .tmp/card-source checkout --detach "refs/tags/$TAG"
+
+          TAG_COMMIT="$(git -C .tmp/card-source rev-parse "refs/tags/$TAG^{commit}")"
+          HEAD_COMMIT="$(git -C .tmp/card-source rev-parse HEAD)"
+
+          if [ "$HEAD_COMMIT" != "$TAG_COMMIT" ]; then
+            echo "ERROR: checked-out commit does not match release tag"
+            exit 1
+          fi
+
+      - name: Build combined documentation
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          python3 scripts/publish_product_docs.py \
+            --source-docs .tmp/card-source/docs \
+            --product-key card \
+            --product-label "Calendar Card" \
+            --product-icon calendar-days \
+            --release-tag "$RELEASE_TAG" \
+            --publish-shared-assets \
+            --preserve-legacy-root-urls
+
+          rm -rf .tmp
+
+      - name: Commit published documentation if it changed
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          PUSH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A -- \
+            .sync/card-release \
+            .sync/card-config.json \
+            card \
+            docs.json \
+            images \
+            logo \
+            favicon.ico \
+            style.css
+
+          if git diff --cached --quiet; then
+            echo "Published output already matches $RELEASE_TAG."
+            exit 0
+          fi
+
+          git commit -m "Publish Calendar Card docs for $RELEASE_TAG"
+          git push \
+            "https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            HEAD:main

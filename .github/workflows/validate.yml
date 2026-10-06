@@ -1,0 +1,22 @@
+name: Validate
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Validate authored site configuration JSON
+        run: python3 -m json.tool docs.template.json >/dev/null
+      - name: Validate generated site configuration JSON
+        run: python3 -m json.tool docs.json >/dev/null
+      - name: Run publisher unit tests
+        run: python3 -m unittest discover -s tests -v
